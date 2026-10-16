@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Windows test-execution probe. Prints only numbers, flags and library basenames."""
-import ctypes
+"""Pinpoint the Windows test crash and discriminate its mechanism. Prints no private source."""
 import json
 import os
 import subprocess
@@ -9,76 +8,75 @@ from pathlib import Path
 
 root = Path.cwd()
 native = root / 'app' / 'src-tauri' / 'native'
-sdkbin = root / 'vendor' / 'bin'
+MARKERS = ['invalid operator', 'unordered', 'run-time check', 'pure virtual', 'terminate called',
+           'buffer overrun', 'stack cookie', 'abort', 'assert', 'access violation', 'not found']
 
 
-def with_path(extra):
+def staged_env(flags=None):
     env = os.environ.copy()
-    env['PATH'] = str(extra) + os.pathsep + env.get('PATH', '')
+    env['PATH'] = str(native) + os.pathsep + env.get('PATH', '')
+    if flags:
+        env['CXXFLAGS'] = flags
     return env
 
 
-def rc(label, argv, env=None):
-    try:
-        code = subprocess.call(argv, env=env, cwd=str(root))
-    except OSError as error:
-        print(f'{label} spawn_oserror winerror={error.winerror} errno={error.errno}')
-        return
-    print(f'{label} rc={code}')
+def capture(argv, env=None):
+    done = subprocess.run(argv, env=env or staged_env(), cwd=str(root),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+    return done.returncode, done.stdout or ''
+
+
+def verdict(code, text):
+    low = text.lower()
+    return {m: low.count(m) for m in MARKERS if low.count(m)}
 
 
 def main():
-    print(f'os={os.name} py={sys.version_info.major}.{sys.version_info.minor}')
-    print(f'native_dir={native.is_dir()} native_dlls={len(list(native.glob("*.dll")))}')
-    print(f'sdkbin_dir={sdkbin.is_dir()} sdkbin_dlls={len(list(sdkbin.glob("*.dll"))) if sdkbin.is_dir() else -1}')
-    built = subprocess.run(['cargo', 'test', '--workspace', '--locked', '--no-run', '--message-format=json'],
-                           cwd=str(root), capture_output=True, text=True)
-    print(f'build_rc={built.returncode}')
+    _, out = capture(['cargo', 'test', '--workspace', '--locked', '--no-run', '--message-format=json'])
     exes = []
-    for line in built.stdout.splitlines():
+    for line in out.splitlines():
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
             continue
         if message.get('reason') == 'compiler-artifact' and message.get('executable'):
-            exes.append(message['executable'])
-    print(f'exes={len(exes)}')
+            exes.append(Path(message['executable']))
+    crasher = None
     for i, exe in enumerate(exes, 1):
-        path = Path(exe)
-        print(f'EXE{i} exists={path.is_file()} name_head={path.name[:2]} ext={path.suffix}')
-        rc(f'EXE{i}_plain', [exe, '--quiet'])
-        rc(f'EXE{i}_stagedpath', [exe, '--quiet'], with_path(native))
-        rc(f'EXE{i}_sdkbinpath', [exe, '--quiet'], with_path(sdkbin))
-        rc(f'EXE{i}_cirunner', [sys.executable, str(root / 'scripts' / 'test.py'), '--run', exe, '--quiet'],
-           with_path(native))
-    # Report only libraries that cannot be loaded and the Windows error number.
-    if native.is_dir():
-        cookie = os.add_dll_directory(str(native))
-        for dll in sorted(native.glob('*.dll')):
-            try:
-                ctypes.WinDLL(str(dll))
-            except OSError as error:
-                print(f'LOADFAIL {dll.name} winerror={error.winerror}')
-            except Exception as error:
-                print(f'LOADFAIL {dll.name} kind={type(error).__name__}')
-        cookie.close()
-    print('load_scan_done')
-    # The exact CI command, reduced to counters.
-    log = Path(os.environ.get('RUNNER_TEMP', '/tmp')) / 'probe-suite.log'
-    suite = subprocess.call([sys.executable, str(root / 'scripts' / 'test.py')],
-                            cwd=str(root), env=with_path(native), stdout=open(log, 'wb'),
-                            stderr=subprocess.STDOUT)
-    lines = log.read_text(encoding='utf-8', errors='replace').splitlines()
-    print(f'suite_rc={suite}')
-    print(f'suite_ok={sum(1 for line in lines if line.endswith("... ok"))}')
-    print(f'suite_failed={sum(1 for line in lines if line.endswith("... FAILED"))}')
-    print(f'suite_result_lines={sum(1 for line in lines if "test result:" in line)}')
-    print(f'suite_running={sum(1 for line in lines if line.startswith("running "))}')
-    print(f'suite_panicked={sum(1 for line in lines if "panicked" in line)}')
-    print(f'suite_error_prefix={sum(1 for line in lines if line.startswith("error"))}')
-    print(f'suite_exitcode_lines={json.dumps([line[:160] for line in lines if "exit code" in line][:2])}')
-    print(f'suite_couldnot_lines={json.dumps([line[:160] for line in lines if "could not" in line][:2])}')
-    print(f'suite_lines={len(lines)}')
+        stem = exe.stem.rsplit('-', 1)[0]
+        _, listing = capture([str(exe), '--list', '--format=terse'])
+        names = [line.split(':')[0].strip() for line in listing.splitlines() if line.endswith(': test')]
+        code, text = capture([str(exe), '--test-threads=1'])
+        ok = sum(1 for l in text.splitlines() if l.endswith('... ok'))
+        print(f'EXE{i} stem={stem} tests={len(names)} seq_rc={code} seq_ok={ok}')
+        if code != 0:
+            print(f'EXE{i} markers={json.dumps(verdict(code, text))}')
+            solo = []
+            for j, name in enumerate(names, 1):
+                rc, body = capture([str(exe), name, '--exact', '--nocapture'])
+                if rc != 0:
+                    solo.append(j)
+                    crasher = (exe, name)
+                    print(f'EXE{i} solo_crashers_pos={j} of {len(names)} markers={json.dumps(verdict(rc, body))}')
+            print(f'EXE{i} solo_total_crashers={len(solo)}')
+    if crasher:
+        exe, name = crasher
+        for label, flags in [('GS_off', '/GS-'), ('O2', '/O2'), ('GS_off_and_O2', '/GS- /O2')]:
+            subprocess.call(['cargo', 'clean', '-p', 'inbless-engine'], cwd=str(root))
+            code, text = capture(['cargo', 'test', '-p', 'inbless-engine', '--lib', '--locked', '--', name,
+                                  '--exact', '--nocapture'], staged_env(flags))
+            print(f'AB_{label} rc={code} ok={sum(1 for l in text.splitlines() if l.endswith("... ok"))} '
+                  f'err_prefix_lines={sum(1 for l in text.splitlines() if l.startswith("error"))} '
+                  f'markers={json.dumps(verdict(code, text))}')
+        subprocess.call(['cargo', 'clean', '-p', 'inbless-engine'], cwd=str(root))
+        code, text = capture(['cargo', 'test', '-p', 'inbless-engine', '--lib', '--locked', '--', name, '--exact'])
+        print(f'AB_baseline_rebuild rc={code} ok={sum(1 for l in text.splitlines() if l.endswith("... ok"))}')
+        for threads in ['1', '2']:
+            env = staged_env()
+            env['RUST_TEST_THREADS'] = threads
+            code, _ = capture([str(exe), name, '--exact'], env)
+            print(f'THREADS_{threads}_rc={code}')
+    print('probe_done')
 
 
 if __name__ == '__main__':
