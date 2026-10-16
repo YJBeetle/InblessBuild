@@ -5,9 +5,11 @@ on:
     branches: ['**']
   workflow_dispatch:
 
+# Group per commit: a newer push must never kill a build that is already running,
+# and different commits should proceed in parallel rather than queue.
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-${{ github.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
