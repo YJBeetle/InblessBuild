@@ -2,6 +2,8 @@ name: Diagnose windows tests
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['ci/diagnose-windows']
 
 permissions:
   contents: read
