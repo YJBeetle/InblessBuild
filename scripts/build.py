@@ -20,18 +20,24 @@ def build(platform):
     extra = []
     if platform == 'windows-x64':
         extra = ['--protocol-deps', str(SOURCE / '.ci-vcpkg/installed/x64-windows')]
+    android = platform == 'android-arm64'
     commands = [
-        ('sdk', [sys.executable, 'scripts/build-sdk.py', *extra], SOURCE),
+        ('sdk', [sys.executable, 'scripts/build-sdk.py', *( ['--android'] if android else extra)], SOURCE),
         ('frontend-dependencies', ['npm', 'ci'], SOURCE / 'app'),
-        ('stage-runtime', [sys.executable, 'scripts/stage-native.py'], SOURCE),
+        ('stage-runtime', [sys.executable, 'scripts/stage-native.py', *( ['--android'] if android else [])], SOURCE),
         ('format', ['cargo', 'fmt', '--all', '--check'], SOURCE),
         ('clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings'], SOURCE),
         ('tests', [sys.executable, 'scripts/test.py'], SOURCE),
-        ('installers', ['npm', 'run', 'tauri', '--', 'build', '--bundles',
-                       'app,dmg' if platform == 'macos-arm64' else 'nsis' if platform == 'windows-x64' else 'deb',
-                       *([] if platform == 'macos-arm64' else ['--no-sign']), '--', '--locked'], SOURCE / 'app'),
-        ('verify-packages', [sys.executable, 'scripts/package-artifacts.py', '--platform', platform], SOURCE),
     ]
+    if android:
+        # Gradle assembles and self-signs the APK; a keystore is only needed for stores.
+        commands.append(('apk', ['npm', 'run', 'tauri', '--', 'android', 'build', '-t', 'aarch64',
+                                 '--', '--locked'], SOURCE / 'app'))
+    else:
+        commands.append(('installers', ['npm', 'run', 'tauri', '--', 'build', '--bundles',
+                        'app,dmg' if platform == 'macos-arm64' else 'nsis' if platform == 'windows-x64' else 'deb',
+                        *([] if platform == 'macos-arm64' else ['--no-sign']), '--', '--locked'], SOURCE / 'app'))
+    commands.append(('verify-packages', [sys.executable, 'scripts/package-artifacts.py', '--platform', platform], SOURCE))
     # npm is a command script on Windows; resolve it explicitly for CreateProcess.
     if os.name == 'nt':
         import shutil
@@ -59,5 +65,5 @@ def build(platform):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--platform', required=True, choices=['linux-x64', 'windows-x64', 'macos-arm64'])
+    parser.add_argument('--platform', required=True, choices=['linux-x64', 'windows-x64', 'macos-arm64', 'android-arm64'])
     raise SystemExit(build(parser.parse_args().platform))

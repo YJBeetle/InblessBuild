@@ -27,6 +27,8 @@ jobs:
             runner: windows-2022
           - platform: linux-x64
             runner: ubuntu-24.04
+          - platform: android-arm64
+            runner: ubuntu-24.04
     defaults:
       run:
         shell: bash
@@ -62,7 +64,7 @@ jobs:
           test "$(uname -m)" = arm64
           brew install cmake ninja pkg-config openssl@3 ffmpeg sevenzip
       - name: Linux dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.platform != 'android-arm64'
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config patchelf p7zip-full \
@@ -111,6 +113,24 @@ jobs:
         with:
           path: Inbless/.ci-vcpkg/installed
           key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+      - name: Android JDK
+        if: matrix.platform == 'android-arm64'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      # MaaDeps ships clang-21 prebuilt OpenCV/ONNX, and Gradle links the NDK's own
+      # libc++_shared.so into the APK; the runner default (r27, clang-18) is too old.
+      - name: Android NDK r29
+        if: matrix.platform == 'android-arm64'
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r29
+          add-to-path: false
+      - name: Android Rust target
+        if: matrix.platform == 'android-arm64'
+        run: rustup target add aarch64-linux-android
       - name: Select host Linux C++ compiler
         if: runner.os == 'Linux'
         run: echo 'CXX=/usr/bin/clang++' >> "$GITHUB_ENV"
@@ -118,6 +138,8 @@ jobs:
         working-directory: .
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          INBLESS_KEYSTORE_PASSWORD: ${{ secrets.INBLESS_KEYSTORE_PASSWORD }}
         run: python scripts/build.py --platform '${{ matrix.platform }}'
       - name: Encrypt installers and diagnostic logs
         id: encrypt

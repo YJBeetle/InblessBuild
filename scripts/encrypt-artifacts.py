@@ -62,5 +62,5 @@ def encrypt(platform):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--platform', required=True, choices=['linux-x64', 'windows-x64', 'macos-arm64'])
+    parser.add_argument('--platform', required=True, choices=['linux-x64', 'windows-x64', 'macos-arm64', 'android-arm64'])
     raise SystemExit(encrypt(parser.parse_args().platform))
