@@ -26,14 +26,15 @@ def build(platform):
         ('frontend-dependencies', ['npm', 'ci'], SOURCE / 'app'),
         ('stage-runtime', [sys.executable, 'scripts/stage-native.py', *( ['--android'] if android else [])], SOURCE),
         ('format', ['cargo', 'fmt', '--all', '--check'], SOURCE),
-        ('clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings'], SOURCE),
-        ('tests', [sys.executable, 'scripts/test.py'], SOURCE),
     ]
     if android:
-        # Gradle assembles and self-signs the APK; a keystore is only needed for stores.
+        # Host clippy and tests link the desktop SDK, which this job does not build;
+        # they already run in the three desktop jobs. Gradle self-signs the APK.
         commands.append(('apk', ['npm', 'run', 'tauri', '--', 'android', 'build', '-t', 'aarch64',
                                  '--', '--locked'], SOURCE / 'app'))
     else:
+        commands.append(('clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings'], SOURCE))
+        commands.append(('tests', [sys.executable, 'scripts/test.py'], SOURCE))
         commands.append(('installers', ['npm', 'run', 'tauri', '--', 'build', '--bundles',
                         'app,dmg' if platform == 'macos-arm64' else 'nsis' if platform == 'windows-x64' else 'deb',
                         *([] if platform == 'macos-arm64' else ['--no-sign']), '--', '--locked'], SOURCE / 'app'))

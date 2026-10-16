@@ -66,8 +66,9 @@ jobs:
           test "$(uname -m)" = arm64
           brew install cmake ninja pkg-config openssl@3 ffmpeg sevenzip
       - name: Linux dependencies
-        # The Android job still runs host-side fmt/clippy/tests, and inbless-app links WebKitGTK there.
-        if: runner.os == 'Linux'
+        # This job only cross-builds the APK now; the desktop dev packages are for the
+        # host clippy/tests, which run in the linux-x64 job instead.
+        if: runner.os == 'Linux' && matrix.platform != 'android-arm64'
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config patchelf p7zip-full \
