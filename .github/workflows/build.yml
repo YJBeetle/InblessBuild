@@ -139,7 +139,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
-          INBLESS_KEYSTORE_PASSWORD: ${{ secrets.INBLESS_KEYSTORE_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: python scripts/build.py --platform '${{ matrix.platform }}'
       - name: Encrypt installers and diagnostic logs
         id: encrypt
