@@ -1,0 +1,137 @@
+name: Private source build
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  packages:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-15
+          - platform: windows-x64
+            runner: windows-2022
+          - platform: linux-x64
+            runner: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: Inbless
+    steps:
+      - name: Check required secrets
+        working-directory: ${{ runner.temp }}
+        env:
+          READ_TOKEN: ${{ secrets.INBLESS_READ_TOKEN }}
+          ARCHIVE_PASSWORD: ${{ secrets.ARTIFACT_PASSWORD }}
+        run: |
+          test -n "$READ_TOKEN" || { echo '::error::Missing INBLESS_READ_TOKEN'; exit 1; }
+          test -n "$ARCHIVE_PASSWORD" || { echo '::error::Missing ARTIFACT_PASSWORD'; exit 1; }
+      - name: Checkout pinned private submodule
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.INBLESS_READ_TOKEN }}
+          submodules: recursive
+          lfs: true
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          test "$(uname -m)" = arm64
+          brew install cmake ninja pkg-config openssl@3 ffmpeg sevenzip
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config patchelf p7zip-full \
+            libssl-dev libcurl4-openssl-dev libavcodec-dev libavutil-dev libswscale-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libdbus-1-dev libwayland-dev libffi-dev
+      - name: MSVC developer environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/setup-msvc.ps1
+      - name: Select the MSVC linker explicitly
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64/link.exe'
+          if (!(Test-Path $linker)) { throw "MSVC linker missing: $linker" }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
+      - name: Pinned Windows protocol toolchain
+        if: runner.os == 'Windows'
+        uses: actions/checkout@v7
+        with:
+          repository: microsoft/vcpkg
+          ref: e456309491fd875487bf02b8a0dca76c1b1b00cc
+          path: Inbless/.ci-vcpkg
+          persist-credentials: false
+      - name: Windows native dependency cache
+        id: vcpkg-cache
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v5
+        with:
+          path: Inbless/.ci-vcpkg/installed
+          key: windows-x64-vcpkg-${{ hashFiles('Inbless/config/ci/vcpkg.json') }}
+      - name: Windows protocol dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./.ci-vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./.ci-vcpkg/vcpkg.exe install --triplet x64-windows --host-triplet x64-windows `
+            --x-manifest-root="$pwd/config/ci" --x-install-root="$pwd/.ci-vcpkg/installed"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "CMAKE_TOOLCHAIN_FILE=$pwd/.ci-vcpkg/scripts/buildsystems/vcpkg.cmake" >> $env:GITHUB_ENV
+      - name: Save completed Windows dependencies
+        if: runner.os == 'Windows' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: Inbless/.ci-vcpkg/installed
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+      - name: Select host Linux C++ compiler
+        if: runner.os == 'Linux'
+        run: echo 'CXX=/usr/bin/clang++' >> "$GITHUB_ENV"
+      - name: Check and package private source
+        working-directory: .
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/build.py --platform '${{ matrix.platform }}'
+      - name: Encrypt installers and diagnostic logs
+        id: encrypt
+        if: ${{ !cancelled() }}
+        working-directory: .
+        env:
+          ARTIFACT_PASSWORD: ${{ secrets.ARTIFACT_PASSWORD }}
+        run: python scripts/encrypt-artifacts.py --platform '${{ matrix.platform }}'
+      - name: Upload encrypted archive only
+        if: ${{ !cancelled() && steps.encrypt.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: Inbless-${{ matrix.platform }}-encrypted
+          path: dist-encrypted/*.7z
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
