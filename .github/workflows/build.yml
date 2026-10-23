@@ -19,6 +19,7 @@ jobs:
     name: ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    environment: Build
     strategy:
       fail-fast: false
       matrix:
@@ -144,6 +145,12 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_P12_BASE64 || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && vars.SIGNING_IDENTITY || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && vars.SIGNING_TEAM_ID || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.NOTARY_APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.NOTARY_APP_PASSWORD || '' }}
         run: python scripts/build.py --platform '${{ matrix.platform }}'
       - name: Encrypt installers and diagnostic logs
         id: encrypt

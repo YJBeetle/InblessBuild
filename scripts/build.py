@@ -17,6 +17,16 @@ def build(platform):
     # Credentials belong to checkout/encryption steps, never to build subprocesses.
     env.pop('ARTIFACT_PASSWORD', None)
     env.pop('INBLESS_READ_TOKEN', None)
+    signing_names = ('APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD',
+                     'APPLE_SIGNING_IDENTITY', 'APPLE_TEAM_ID', 'APPLE_ID', 'APPLE_PASSWORD')
+    signing = {name: env.pop(name, '') for name in signing_names}
+    if platform == 'macos-arm64':
+        missing = [name for name, value in signing.items() if not value]
+        if missing:
+            print('::error::Missing macOS signing settings: ' + ', '.join(missing), flush=True)
+            return 1
+        env['INBLESS_REQUIRE_NOTARIZATION'] = '1'
+        env['APPLE_TEAM_ID'] = signing['APPLE_TEAM_ID']
     extra = []
     if platform == 'windows-x64':
         extra = ['--protocol-deps', str(SOURCE / '.ci-vcpkg/installed/x64-windows')]
@@ -38,6 +48,8 @@ def build(platform):
         commands.append(('installers', ['npm', 'run', 'tauri', '--', 'build', '--bundles',
                         'app,dmg' if platform == 'macos-arm64' else 'nsis' if platform == 'windows-x64' else 'deb',
                         *([] if platform == 'macos-arm64' else ['--no-sign']), '--', '--locked'], SOURCE / 'app'))
+    if platform == 'macos-arm64':
+        commands.append(('notarize-dmg', [sys.executable, 'scripts/notarize-macos.py'], SOURCE))
     commands.append(('verify-packages', [sys.executable, 'scripts/package-artifacts.py', '--platform', platform], SOURCE))
     # npm is a command script on Windows; resolve it explicitly for CreateProcess.
     if os.name == 'nt':
@@ -51,7 +63,10 @@ def build(platform):
         print(f'::group::{name}', flush=True)
         try:
             with (logs / (name + '.log')).open('wb') as output:
-                result = subprocess.run(command, cwd=cwd, env=env, stdout=output, stderr=subprocess.STDOUT)
+                step_env = env.copy()
+                if platform == 'macos-arm64' and name in ('installers', 'notarize-dmg'):
+                    step_env.update(signing)
+                result = subprocess.run(command, cwd=cwd, env=step_env, stdout=output, stderr=subprocess.STDOUT)
             if result.returncode:
                 print(f'::error::{name} failed (exit {result.returncode}); details are in the encrypted logs.', flush=True)
                 return 1
