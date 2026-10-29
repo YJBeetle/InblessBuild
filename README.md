@@ -21,7 +21,7 @@
 
 ```sh
 git -C Inbless fetch origin
-git -C Inbless checkout origin/codex/rust-tauri-ios
+git -C Inbless checkout origin/master
 git add Inbless
 git commit -m "build: 更新 Inbless 版本"
 git push

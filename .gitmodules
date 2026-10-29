@@ -1,4 +1,4 @@
 [submodule "Inbless"]
 	path = Inbless
 	url = git@github.com:YJBeetle/Inbless.git
-	branch = codex/rust-tauri-ios
+	branch = master
